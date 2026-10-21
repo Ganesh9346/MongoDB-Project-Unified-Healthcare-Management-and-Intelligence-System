@@ -96,7 +96,7 @@ from modules.analytics import (
     pharmacy_report,
     billing_report,
     emergency_report,
-    bed_availability_report
+    # bed_availability_report
 )
 
 

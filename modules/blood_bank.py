@@ -1,6 +1,6 @@
 from config.database import blood_bank_collection
-from pymongo.errors import DuplicateKeyError
 from datetime import datetime
+from pymongo.errors import PyMongoError
 
 
 VALID_BLOOD_GROUPS = [
@@ -21,44 +21,65 @@ def add_blood_stock():
     try:
         units = int(input("Enter Available Units: "))
 
-        if units < 0:
-            print("Units cannot be negative.")
+        if units <= 0:
+            print("Units must be greater than zero.")
             return
 
     except ValueError:
         print("Enter a valid number of units.")
         return
 
-    blood_record = {
-        "blood_group": blood_group,
-        "units": units,
-        "updated_at": datetime.now()
-    }
-
     try:
-        blood_bank_collection.insert_one(blood_record)
-        print("Blood stock added successfully!")
+        existing_record = blood_bank_collection.find_one(
+            {"blood_group": blood_group}
+        )
 
-    except DuplicateKeyError:
-        print("This blood group already exists. Use Update Stock instead.")
+        if existing_record:
+            blood_bank_collection.update_one(
+                {"_id": existing_record["_id"]},
+                {
+                    "$inc": {"units": units},
+                    "$set": {"updated_at": datetime.now()}
+                }
+            )
+
+            print(
+                f"Stock updated! New total: "
+                f"{existing_record['units'] + units} units"
+            )
+
+        else:
+            blood_bank_collection.insert_one({
+                "blood_group": blood_group,
+                "units": units,
+                "updated_at": datetime.now()
+            })
+
+            print("Blood stock added successfully!")
+
+    except PyMongoError as error:
+        print(f"Failed to register blood stock: {error}")
 
 
 def view_blood_stock():
     print("\n--- Blood Bank Inventory ---")
 
-    records = blood_bank_collection.find().sort("blood_group", 1)
-    count = 0
+    try:
+        records = blood_bank_collection.find().sort("blood_group", 1)
+        count = 0
 
-    for record in records:
-        count += 1
+        for record in records:
+            count += 1
+            print(
+                f"Blood Group: {record['blood_group']} | "
+                f"Available Units: {record['units']}"
+            )
 
-        print(
-            f"Blood Group: {record['blood_group']} | "
-            f"Available Units: {record['units']}"
-        )
+        if count == 0:
+            print("No blood stock records found.")
 
-    if count == 0:
-        print("No blood stock records found.")
+    except PyMongoError as error:
+        print(f"Failed to retrieve blood stock: {error}")
 
 
 def search_blood_stock():
@@ -70,15 +91,19 @@ def search_blood_stock():
         print("Invalid blood group.")
         return
 
-    record = blood_bank_collection.find_one(
-        {"blood_group": blood_group}
-    )
+    try:
+        record = blood_bank_collection.find_one(
+            {"blood_group": blood_group}
+        )
 
-    if record:
-        print(f"Blood Group: {record['blood_group']}")
-        print(f"Available Units: {record['units']}")
-    else:
-        print("No inventory record found for this blood group.")
+        if record:
+            print(f"Blood Group: {record['blood_group']}")
+            print(f"Available Units: {record['units']}")
+        else:
+            print("No inventory record found.")
+
+    except PyMongoError as error:
+        print(f"Search failed: {error}")
 
 
 def update_blood_stock():
@@ -90,62 +115,61 @@ def update_blood_stock():
         print("Invalid blood group.")
         return
 
-    record = blood_bank_collection.find_one(
-        {"blood_group": blood_group}
-    )
-
-    if not record:
-        print("Blood group not found. Add its stock first.")
-        return
-
-    print("1. Add Units")
-    print("2. Remove Units")
-
-    choice = input("Enter your choice: ").strip()
-
-    if choice not in ["1", "2"]:
-        print("Invalid choice.")
-        return
-
     try:
+        record = blood_bank_collection.find_one(
+            {"blood_group": blood_group}
+        )
+
+        if not record:
+            print("Blood group not found. Add stock first.")
+            return
+
+        print("1. Add Units")
+        print("2. Remove Units")
+
+        choice = input("Enter your choice: ").strip()
+
+        if choice not in ["1", "2"]:
+            print("Invalid choice.")
+            return
+
         units = int(input("Enter Number of Units: "))
 
         if units <= 0:
             print("Units must be greater than zero.")
             return
 
+        if choice == "1":
+            result = blood_bank_collection.update_one(
+                {"_id": record["_id"]},
+                {
+                    "$inc": {"units": units},
+                    "$set": {"updated_at": datetime.now()}
+                }
+            )
+
+        else:
+            result = blood_bank_collection.update_one(
+                {
+                    "_id": record["_id"],
+                    "units": {"$gte": units}
+                },
+                {
+                    "$inc": {"units": -units},
+                    "$set": {"updated_at": datetime.now()}
+                }
+            )
+
+        if result.modified_count == 1:
+            print("Blood stock updated successfully!")
+        else:
+            print("Insufficient stock or stock has changed.")
+
     except ValueError:
-        print("Enter a valid number of units.")
-        return
+        print("Enter a valid number.")
 
-    if choice == "1":
-        result = blood_bank_collection.update_one(
-            {
-                "blood_group": blood_group,
-                "units": record["units"]
-            },
-            {
-                "$inc": {"units": units},
-                "$set": {"updated_at": datetime.now()}
-            }
-        )
-
-    else:
-        result = blood_bank_collection.update_one(
-            {
-                "blood_group": blood_group,
-                "units": {"$gte": units}
-            },
-            {
-                "$inc": {"units": -units},
-                "$set": {"updated_at": datetime.now()}
-            }
-        )
-
-    if result.modified_count == 1:
-        print("Blood stock updated successfully!")
-    else:
-        print("Stock changed or insufficient units. Check the current stock and try again.")
+    except PyMongoError as error:
+        print(f"Failed to update stock: {error}")
 
 
 def view_low_blood_stock():
@@ -160,23 +184,24 @@ def view_low_blood_stock():
             print("Threshold cannot be negative.")
             return
 
+        records = blood_bank_collection.find(
+            {"units": {"$lte": minimum_units}}
+        ).sort("blood_group", 1)
+
+        count = 0
+
+        for record in records:
+            count += 1
+            print(
+                f"Blood Group: {record['blood_group']} | "
+                f"Available Units: {record['units']}"
+            )
+
+        if count == 0:
+            print("No blood groups are below the specified threshold.")
+
     except ValueError:
         print("Enter a valid number.")
-        return
 
-    records = blood_bank_collection.find(
-        {"units": {"$lte": minimum_units}}
-    ).sort("blood_group", 1)
-
-    count = 0
-
-    for record in records:
-        count += 1
-
-        print(
-            f"Blood Group: {record['blood_group']} | "
-            f"Available Units: {record['units']}"
-        )
-
-    if count == 0:
-        print("No blood groups are below the specified threshold.")
+    except PyMongoError as error:
+        print(f"Failed to retrieve low stock: {error}")
